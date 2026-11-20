@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "time-report-agent"
+version = "0.1.0"
+description = "Phase 2 CLI that reads a reporting queue CSV and sends SMS via the TimeReport MCP server"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "VectorSynapse" }]
+dependencies = [
+  "mcp>=2.3.0,<3",
+  "phonenumbers>=8.13,<10",
+  "python-dotenv>=1.0,<2",
+  "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<1",
+]
+
+[project.scripts]
+time-report-agent = "time_report_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/time_report_agent"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/time_report_agent" = "time_report_agent"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["src"]
