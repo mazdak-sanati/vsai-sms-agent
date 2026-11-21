@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 
 REQUIRED_MCP_TOOLS = frozenset(
     {
-        "list_workbooks",
         "get_sms_status",
         "send_sms",
     }
@@ -30,6 +29,7 @@ _MCP_CHILD_ENV_KEYS = frozenset(
         "ELKS_API_USERNAME",
         "ELKS_API_PASSWORD",
         "ELKS_FROM",
+        "TIMEREPORT_SMS_TRACE",
         "TIMEREPORT_HTTP_HOST",
         "TIMEREPORT_HTTP_PORT",
         "TIMEREPORT_RESOURCE_SERVER_URL",
@@ -68,6 +68,10 @@ class AppConfig:
     send_window_end: time
     send_weekdays_only: bool
     child_env: dict[str, str]
+    ollama_host: str
+    ollama_model: str
+    ollama_think: bool
+    default_period: str | None
 
 
 def _parse_time(value: str, *, field: str) -> time:
@@ -116,6 +120,7 @@ def build_child_env(environ: dict[str, str]) -> dict[str, str]:
         "ELKS_API_USERNAME",
         "ELKS_API_PASSWORD",
         "ELKS_FROM",
+        "TIMEREPORT_SMS_TRACE",
     ):
         if key in environ and environ[key] != "":
             out[key] = environ[key]
@@ -188,6 +193,13 @@ def load_config(
     child_env["TIMEREPORT_STDIO_TENANT"] = stdio_tenant
     child_env["TIMEREPORT_CONFIG"] = str(timereport_config)
 
+    ollama_host = (env.get("OLLAMA_HOST") or "http://127.0.0.1:11434").strip()
+    ollama_model = (env.get("OLLAMA_MODEL") or "gemma4:e4b").strip()
+    # gemma4 thinking mode can look like a hang; default off for terminal UX.
+    ollama_think = _truthy(env.get("OLLAMA_THINK"), default=False)
+    default_period_raw = (env.get("DEFAULT_PERIOD") or "").strip()
+    default_period = default_period_raw or None
+
     return AppConfig(
         organization_id=organization_id,
         stdio_tenant=stdio_tenant,
@@ -203,4 +215,8 @@ def load_config(
         send_window_end=send_window_end,
         send_weekdays_only=_truthy(env.get("SEND_WEEKDAYS_ONLY"), default=True),
         child_env=child_env,
+        ollama_host=ollama_host,
+        ollama_model=ollama_model,
+        ollama_think=ollama_think,
+        default_period=default_period,
     )

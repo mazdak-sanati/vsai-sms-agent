@@ -35,6 +35,10 @@ def base_config(tmp_path: Path, tmp_ledger: Path) -> AppConfig:
             "SMS_PROVIDER": "mock",
             "SMS_LIVE_SEND": "false",
         },
+        ollama_host="http://127.0.0.1:11434",
+        ollama_model="gemma4:e4b",
+        ollama_think=False,
+        default_period="2026-11",
     )
 
 

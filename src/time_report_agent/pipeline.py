@@ -18,7 +18,6 @@ from time_report_agent.ledger import Ledger
 from time_report_agent.mcp_client import (
     McpClientError,
     TimeReportMcp,
-    resolve_workbook_id,
     sms_view_from_result,
 )
 from time_report_agent.phone import redact_phone
@@ -61,8 +60,8 @@ async def run_pipeline(
     summary = RunSummary(
         period=period,
         organization_id=config.organization_id,
-        workbook_id=config.workbook_id,
-        template_id=config.sms_template_id,
+        workbook_id=None,
+        template_id="caller_provided",
         mode=mode,
         source="list.csv",
     )
@@ -78,14 +77,6 @@ async def run_pipeline(
     if queue.header_error:
         summary.config_error = queue.header_error
         return summary
-
-    try:
-        listed = await client.list_workbooks()
-        workbook_id = resolve_workbook_id(listed, config.workbook_id)
-    except McpClientError as exc:
-        summary.config_error = str(exc)
-        return summary
-    summary.workbook_id = workbook_id
 
     day = local_today(config.timezone, now=now)
     store = ledger or Ledger(config.ledger_path)
@@ -134,7 +125,7 @@ async def run_pipeline(
             summary.candidates.append(candidate)
             continue
 
-        # Send path — MCP still delivers SMS; body remains the server template.
+        # Send path — agent supplies destination + body; MCP only delivers.
         try:
             with store.exclusive_lock():
                 inserted = store.try_insert_pending(
@@ -155,11 +146,33 @@ async def run_pipeline(
                     )
                     continue
 
+                to_number = row.telephone_e164 or ""
+                body = candidate.sms_preview or ""
+                print(
+                    f"[mcp-send] employee_id={row.employee_id} period={period} "
+                    f"to={redact_phone(to_number)} body_chars={len(body)}",
+                    flush=True,
+                )
                 result = await client.send_sms(
-                    workbook_id=workbook_id,
+                    to=to_number,
+                    message=body,
                     employee_id=row.employee_id,
                     period=period,
-                    template_id=config.sms_template_id,
+                )
+                print(
+                    f"[mcp-send] response ok={result.ok} "
+                    f"code={result.error_code} data={result.data}",
+                    flush=True,
+                )
+                status_check = await client.get_sms_status(
+                    employee_id=row.employee_id,
+                    period=period,
+                    local_date=day.isoformat(),
+                )
+                print(
+                    f"[mcp-send] get_sms_status ok={status_check.ok} "
+                    f"data={status_check.data}",
+                    flush=True,
                 )
                 if not result.ok:
                     status = "failed"

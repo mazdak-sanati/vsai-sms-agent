@@ -1,98 +1,107 @@
 # time_report_agent
 
-Phase 2 Windows CLI that reads an employee reporting queue CSV and, when you pass `--send`, asks the existing TimeReport MCP server to send at most one SMS reminder per employee per local day.
+Phase 2 **interactive SMS agent** for Vector Synapse.
 
-This repository does **not** implement SMS delivery itself. It does not call 46elks. It does not schedule background jobs. It does not use an LLM.
+It waits in your terminal, uses a **local Ollama** model (`gemma4:e4b` by default), reads `queue\list.csv` to decide who needs a reminder and what the SMS should say, and sends only through the existing TimeReport MCP server after you confirm with `y/N`.
 
-Phase 1 MCP server (unchanged):
+This repo does **not** reimplement 46elks. It does **not** auto-send on a schedule.
+
+MCP server:
 
 `C:\Users\Mazda\Documents\vectorsynapse-timereport-mcp-server`
 
-## What it does
+## How the chat agent works
 
-1. Loads `.env` / CLI flags.
-2. Starts the MCP server over **stdio** for one tenant (`ORGANIZATION_ID` must equal `TIMEREPORT_STDIO_TENANT`).
-3. Reads `queue\list.csv` (or `--csv`) locally every run.
-4. Treats an **empty `hours` cell** as “this day is unreported”.
-5. Asks MCP `get_reporting_status` and only continues when status is `incomplete`.
-6. Default mode is **dry-run** (no `send_sms`).
-7. With `--send`, calls MCP `send_sms` with `workbook_id`, `employee_id`, `period`, and `template_id`, then records the outcome in a local SQLite ledger.
+1. You start `chat` — the agent stays open and waits for prompts.
+2. You say something like: `send sms to employees`
+3. The model calls `list_sms_candidates` (reads `list.csv`).
+4. It shows who is eligible and the SMS preview text.
+5. If you ask it to send, it calls `send_sms_to_candidates`, which still asks **you** `y/N` in the terminal before MCP `send_sms`.
 
-## SMS text limitation (v1)
-
-The MCP `send_sms` tool does **not** accept a custom message body. It sends the tenant template, and that template may contain only `{period}`.
-
-So this CLI cannot send:
-
-`Hej {first_name}! Det saknas {missing_hours} timmar...`
-
-until the Phase 1 server template contract is extended. Dry-run prints eligibility by `employee_id` and the configured `SMS_TEMPLATE_ID` (default `timesheet_reminder`).
-
-The destination number comes from the Excel workbook configured in the MCP tenant file, not from a free-form SMS recipient argument.
+Deterministic one-shot commands (`run --dry-run` / `--confirm` / `--send`) remain available.
 
 ## Prerequisites
 
-1. Python 3.12+.
-2. Working Phase 1 install: `pip install -e ".[dev]"` in the MCP server repo (or `timereport-mcp` on `PATH`).
-3. Tenant TOML + workbook for the organization you will message. The synthetic example config is fine for `check-config`, but it will not contain your real queue employees.
-4. `SMS_PROVIDER=mock` until you explicitly approve a live send.
+1. Python 3.12+
+2. Ollama installed and running, with model pulled:
+   ```powershell
+   ollama pull gemma4:e4b
+   ollama serve
+   ```
+3. Phase 1 MCP server install (`timereport-mcp` reachable via `MCP_COMMAND`)
+4. Local tenant/workbook configured (see `config/local_tenant.toml` / `workbooks\local`)
+5. `queue\list.csv` present
 
 ## Setup
 
 ```powershell
 cd C:\Users\Mazda\Documents\time_report_agent
-python -m venv .venv
 .\.venv\Scripts\activate
 pip install -e ".[dev]"
-
-# Ensure the MCP server package is importable / on PATH, e.g.:
-# & C:\Users\Mazda\Documents\vectorsynapse-timereport-mcp-server\.venv\Scripts\Activate.ps1
-# or set MCP_COMMAND to the full path of timereport-mcp
-
 copy .env.example .env
-# Edit .env: ORGANIZATION_ID, TIMEREPORT_STDIO_TENANT, TIMEREPORT_CONFIG, MCP_COMMAND, paths
+# Edit .env — or use tests\env_local.send.env for local MCP + SMS settings
 ```
 
-Put the queue file at:
+CSV headers after trim: `employee_id`, `employee_name`, `telephone`, `date`, `hours`.
 
-`C:\Users\Mazda\Documents\time_report_agent\queue\list.csv`
-
-Expected headers after trim (semicolon or comma): `employee_id`, `employee_name`, `telephone`, `date`, `hours`.
-
-## Commands
+## Start the waiting agent
 
 ```powershell
-python -m time_report_agent check-config
-
-# No SMS is sent.
-python -m time_report_agent run --env-file tests\env_local.send.env --period 2026-11 --dry-run
-
-# Preview, then ask in the terminal before sending (recommended).
-python -m time_report_agent run --env-file tests\env_local.send.env --period 2026-11 --confirm
-
-# Send immediately without a prompt (mock or live depending on env).
-python -m time_report_agent run --env-file tests\env_local.send.env --period 2026-11 --send
+.\.venv\Scripts\python.exe -m time_report_agent chat `
+  --env-file tests\env_local.send.env `
+  --period 2026-11
 ```
 
-For a real 46elks message, edit `tests\env_local.send.env`: set `SMS_PROVIDER=elks`, `SMS_LIVE_SEND=true`, and the three `ELKS_*` values. Then use `--confirm`.
+Example conversation:
 
-`--period` is required. The CLI never guesses the period from today's date.
+```text
+You> send sms to employees
+Agent> ...lists eligible people and SMS preview...
+You> yes, send them
+[tool] send_sms_to_candidates(...)
+Send SMS via MCP to 1 eligible recipient(s)? [y/N]: y
+```
 
-### Exit codes
+While it works you should see traces like:
 
-| Code | Meaning |
-|---|---|
-| 0 | Finished without failed/uncertain rows or config errors |
-| 1 | Config / tenant / MCP session failure |
-| 2 | Batch finished with at least one `failed` or `uncertain` row |
+```text
+[agent] user turn accepted ...
+[ollama] requesting model=gemma4:e4b ...
+[ollama] done in 1.2s ...
+[tool] start list_sms_candidates(...)
+[tool] done list_sms_candidates: ...
+Agent> ...
+```
 
-## Safety
+If you see nothing after `You>`, wait for `[ollama] requesting` — the first model load can take a bit. `OLLAMA_THINK=false` (default) keeps turns faster.
 
-- Dry-run never calls `send_sms`.
-- Same local calendar day (Europe/Stockholm): at most one successful/in-flight claim per organization + employee + period in the local ledger; the MCP server also enforces its own daily claim.
-- Outside the send window (default 08:00–18:00 weekdays), `--send` does not send.
-- Stdout identifies rows by `employee_id` only; names and phone numbers are not printed.
-- `.env`, queue CSVs, and ledger databases are gitignored.
+Type `exit` to stop.
+
+## One-shot CLI (no LLM)
+
+```powershell
+python -m time_report_agent run --env-file tests\env_local.send.env --period 2026-11 --dry-run
+python -m time_report_agent run --env-file tests\env_local.send.env --period 2026-11 --confirm
+```
+
+## Ollama settings
+
+In `.env` / env file:
+
+```env
+OLLAMA_HOST=http://127.0.0.1:11434
+OLLAMA_MODEL=gemma4:e4b
+DEFAULT_PERIOD=2026-11
+```
+
+These stay in the agent process. They are **not** sent to the MCP server (`LLM_*` keys are rejected by MCP; do not use that prefix for Ollama).
+
+## SMS notes
+
+- Eligibility, recipient phone, and message text come from **list.csv** (agent-composed).
+- MCP `send_sms` is a delivery tool only: the agent passes `to` + `message` (+ `employee_id`/`period` for idempotency).
+- Same-day dedupe applies (local ledger + MCP claims).
+- Keep `SMS_PROVIDER=mock` until you intentionally enable Elks live send.
 
 ## Tests
 
@@ -100,10 +109,4 @@ For a real 46elks message, edit `tests\env_local.send.env`: set `SMS_PROVIDER=el
 pytest
 ```
 
-Tests use synthetic CSV rows and an in-process fake MCP client. They never send real SMS and never read your personal `queue\list.csv`.
-
-## Docs
-
-- `docs/plan.md` — approved architecture and MCP contract notes
-- `docs/status.md` — progress log
-- `AGENTS.md` — project mission for coding agents
+Tests use synthetic CSV + a fake MCP client. They do not call Ollama or send real SMS.

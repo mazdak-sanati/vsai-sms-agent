@@ -39,12 +39,10 @@ class RunSummary:
         lines.append(f"organization={self.organization_id}")
         lines.append(f"period={self.period}")
         lines.append(f"source={self.source}")
-        lines.append(f"workbook={self.workbook_id or '<unresolved>'}")
-        lines.append(f"template={self.template_id}")
         lines.append(f"mode={self.mode}")
         lines.append(
-            "note=eligibility uses CSV name/phone/hours; "
-            "live send_sms still uses MCP server template + workbook destination"
+            "note=agent chooses recipients and message text from CSV; "
+            "MCP send_sms only delivers caller-provided to+message"
         )
         if not self.send_window_ok:
             lines.append("send_window=outside (no sends)")
