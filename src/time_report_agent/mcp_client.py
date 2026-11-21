@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol
@@ -13,6 +15,20 @@ from time_report_agent.eligibility import SmsStatusView
 
 class McpClientError(RuntimeError):
     """Raised when the MCP session cannot be used safely."""
+
+
+def _mcp_trace_enabled() -> bool:
+    return os.environ.get("MCP_TRACE", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _trace_mcp(message: str) -> None:
+    if _mcp_trace_enabled():
+        print(message, flush=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,10 +55,10 @@ class TimeReportMcp(Protocol):
     async def send_sms(
         self,
         *,
-        workbook_id: str,
+        to: str,
+        message: str,
         employee_id: str,
         period: str,
-        template_id: str,
     ) -> ToolResultView: ...
 
 
@@ -168,9 +184,13 @@ class StdioMcpClient:
 
     async def _call(self, name: str, arguments: dict[str, Any]) -> ToolResultView:
         assert self._client is not None
+        _trace_mcp(
+            f"[mcp] call {name} args={json.dumps(arguments, ensure_ascii=False)}"
+        )
         try:
             result = await self._client.call_tool(name, arguments)
         except Exception as exc:  # noqa: BLE001 — fail closed
+            _trace_mcp(f"[mcp] error {name}: {exc}")
             raise McpClientError(f"tool call {name} failed: {exc}") from exc
         payload = getattr(result, "structured_content", None)
         if payload is None:
@@ -180,13 +200,22 @@ class StdioMcpClient:
                 first = content[0]
                 text = getattr(first, "text", None)
                 if isinstance(text, str) and text.strip().startswith("{"):
-                    import json
-
                     try:
                         payload = json.loads(text)
                     except json.JSONDecodeError:
                         payload = None
-        return parse_tool_payload(payload)
+        parsed = parse_tool_payload(payload)
+        if parsed.ok:
+            _trace_mcp(
+                f"[mcp] ok {name} data={json.dumps(parsed.data, ensure_ascii=False)}"
+            )
+        else:
+            _trace_mcp(
+                f"[mcp] fail {name} code={parsed.error_code} "
+                f"message={parsed.error_message} "
+                f"details={json.dumps(parsed.data, ensure_ascii=False)}"
+            )
+        return parsed
 
     async def list_workbooks(self) -> ToolResultView:
         return await self._call("list_workbooks", {})
@@ -206,18 +235,18 @@ class StdioMcpClient:
     async def send_sms(
         self,
         *,
-        workbook_id: str,
+        to: str,
+        message: str,
         employee_id: str,
         period: str,
-        template_id: str,
     ) -> ToolResultView:
         return await self._call(
             "send_sms",
             {
-                "workbook_id": workbook_id,
+                "to": to,
+                "message": message,
                 "employee_id": employee_id,
                 "period": period,
-                "template_id": template_id,
             },
         )
 
@@ -261,16 +290,16 @@ class FakeMcpClient:
     async def send_sms(
         self,
         *,
-        workbook_id: str,
+        to: str,
+        message: str,
         employee_id: str,
         period: str,
-        template_id: str,
     ) -> ToolResultView:
         call = {
-            "workbook_id": workbook_id,
+            "to": to,
+            "message": message,
             "employee_id": employee_id,
             "period": period,
-            "template_id": template_id,
         }
         self.send_calls.append(call)
         result = self.send_results.get(

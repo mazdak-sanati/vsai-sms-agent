@@ -5,13 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "time-report-agent"
 version = "0.1.0"
-description = "Phase 2 CLI that reads a reporting queue CSV and sends SMS via the TimeReport MCP server"
+description = "Phase 2 SMS agent: Ollama chat + CSV queue + TimeReport MCP sends"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "VectorSynapse" }]
 dependencies = [
   "mcp>=2.3.0,<3",
+  "httpx>=0.27,<1",
   "phonenumbers>=8.13,<10",
   "python-dotenv>=1.0,<2",
   "tzdata>=2024.1",

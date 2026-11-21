@@ -62,12 +62,13 @@ async def test_send_invokes_mcp_tool(
         ledger=Ledger(base_config.ledger_path),
     )
     assert len(fake_mcp.send_calls) == 1
-    assert fake_mcp.send_calls[0] == {
-        "workbook_id": "wb-1",
-        "employee_id": "emp-1",
-        "period": "2026-11",
-        "template_id": "timesheet_reminder",
-    }
+    call = fake_mcp.send_calls[0]
+    assert call["employee_id"] == "emp-1"
+    assert call["period"] == "2026-11"
+    assert call["to"].startswith("+46")
+    assert "tidrapport" in call["message"].lower()
+    assert "workbook_id" not in call
+    assert "template_id" not in call
     assert summary.candidates[0].outcome is Outcome.SENT
 
 
@@ -124,7 +125,7 @@ async def test_suppressed_employee_skipped(
 @pytest.mark.asyncio
 async def test_missing_tool_fails_closed() -> None:
     with pytest.raises(Exception, match="missing required tools"):
-        require_tools({"list_workbooks"})
+        require_tools({"list_workbooks"})  # send_sms / get_sms_status missing
 
 
 @pytest.mark.asyncio
@@ -193,7 +194,6 @@ async def test_summary_redacts_full_phone(
 
 def test_required_tools_constant() -> None:
     assert REQUIRED_MCP_TOOLS == {
-        "list_workbooks",
         "get_sms_status",
         "send_sms",
     }

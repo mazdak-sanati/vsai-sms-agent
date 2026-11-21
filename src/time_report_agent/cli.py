@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from time_report_agent.chat_agent import run_chat_loop
 from time_report_agent.config import ConfigError, load_config
 from time_report_agent.csv_queue import validate_period
 from time_report_agent.eligibility import Outcome
@@ -31,8 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="time_report_agent",
         description=(
-            "Read a reporting queue CSV and optionally send SMS reminders "
-            "through the TimeReport MCP server."
+            "Time-report SMS agent: interactive Ollama chat or one-shot CLI, "
+            "sending through the TimeReport MCP server."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -40,7 +41,19 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("check-config", help="Validate config and MCP tool discovery")
     check.add_argument("--env-file", type=Path, default=None)
 
-    run = sub.add_parser("run", help="Process the queue (dry-run by default)")
+    chat = sub.add_parser(
+        "chat",
+        help="Start interactive agent (Ollama gemma4:e4b) waiting for prompts",
+    )
+    chat.add_argument("--env-file", type=Path, default=None)
+    chat.add_argument("--csv", type=Path, default=None)
+    chat.add_argument(
+        "--period",
+        default=None,
+        help="Reporting period YYYY-MM (or set DEFAULT_PERIOD in env)",
+    )
+
+    run = sub.add_parser("run", help="One-shot queue processing (dry-run by default)")
     run.add_argument("--env-file", type=Path, default=None)
     run.add_argument("--csv", type=Path, default=None)
     run.add_argument("--period", required=True, help="Reporting period YYYY-MM")
@@ -117,25 +130,23 @@ async def _check_config_async(env_file: Path | None) -> int:
     print(f"timereport_config={config.timereport_config}")
     print(f"default_csv={config.default_csv_path}")
     print(f"ledger={config.ledger_path}")
-    print(f"template={config.sms_template_id}")
     print(f"timezone={config.timezone}")
     print(f"sms_provider={config.child_env.get('SMS_PROVIDER', 'mock')}")
     print(f"sms_live_send={config.child_env.get('SMS_LIVE_SEND', 'false')}")
+    print(f"ollama_host={config.ollama_host}")
+    print(f"ollama_model={config.ollama_model}")
+    print("sms_contract=caller provides to+message")
 
     try:
         async with open_stdio_client(config) as client:
             names = await client.list_tool_names()
             require_tools(names)
-            listed = await client.list_workbooks()
-            if not listed.ok:
-                print(
-                    f"mcp error: list_workbooks failed: {listed.error_code}",
-                    file=sys.stderr,
-                )
-                return EXIT_CONFIG
-            workbooks = (listed.data or {}).get("workbooks") or []
             print(f"mcp_tools=ok ({len(names)} tools)")
-            print(f"workbooks={len(workbooks)}")
+            if "list_workbooks" in names:
+                listed = await client.list_workbooks()
+                if listed.ok:
+                    workbooks = (listed.data or {}).get("workbooks") or []
+                    print(f"workbooks={len(workbooks)} (optional timesheet tools)")
             print("send_sms=not called")
     except McpClientError as exc:
         print(f"mcp error: {exc}", file=sys.stderr)
@@ -144,6 +155,43 @@ async def _check_config_async(env_file: Path | None) -> int:
         print(f"mcp error: {exc}", file=sys.stderr)
         return EXIT_CONFIG
     return EXIT_OK
+
+
+async def _chat_async(args: argparse.Namespace) -> int:
+    try:
+        config = load_config(env_file=args.env_file)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+
+    period = (args.period or config.default_period or "").strip()
+    period_err = validate_period(period) if period else "period is required"
+    if period_err:
+        print(
+            "config error: provide --period YYYY-MM or set DEFAULT_PERIOD in env",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG
+
+    csv_path = args.csv or config.default_csv_path
+    if not csv_path.is_file():
+        print(f"config error: CSV not found: {csv_path}", file=sys.stderr)
+        return EXIT_CONFIG
+
+    try:
+        async with open_stdio_client(config) as client:
+            return await run_chat_loop(
+                config,
+                client,
+                csv_path=csv_path,
+                period=period,
+            )
+    except McpClientError as exc:
+        print(f"mcp error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    except Exception as exc:  # noqa: BLE001
+        print(f"mcp error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
 
 
 async def _run_async(args: argparse.Namespace) -> int:
@@ -170,7 +218,6 @@ async def _run_async(args: argparse.Namespace) -> int:
 
     try:
         async with open_stdio_client(config) as client:
-            # Always show a preview first for --confirm.
             preview = await run_pipeline(
                 config,
                 client,
@@ -228,6 +275,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "check-config":
         return run_async(_check_config_async(args.env_file))
+    if args.command == "chat":
+        return run_async(_chat_async(args))
     if args.command == "run":
         return run_async(_run_async(args))
     parser.error(f"unknown command {args.command}")

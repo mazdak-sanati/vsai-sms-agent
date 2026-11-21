@@ -47,3 +47,4 @@ def test_load_happy_path() -> None:
     assert cfg.organization_id == "tenant-a"
     assert cfg.sms_template_id == "timesheet_reminder"
     assert cfg.child_env["TIMEREPORT_STDIO_TENANT"] == "tenant-a"
+    assert cfg.ollama_model == "gemma4:e4b"
